@@ -1,0 +1,198 @@
+import sqlite3
+import streamlit as st
+from geopy.geocoders import Nominatim
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+def get_connection():
+    return sqlite3.connect('jobs.db')
+
+def add_job_to_db(job_title, location, salary, skills_required, contact_info):
+    conn = get_connection()
+    cursor = conn.cursor()
+    geolocator = Nominatim(user_agent="job_finder_ui")
+    location_data = geolocator.geocode(location)
+    latitude, longitude = None, None
+    if location_data:
+        latitude = location_data.latitude
+        longitude = location_data.longitude
+    cursor.execute('''
+    INSERT INTO jobs (job_title, location, latitude, longitude, salary, skills_required, contact_info)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (job_title, location, latitude, longitude, salary, skills_required, contact_info))
+    conn.commit()
+    conn.close()
+    st.success(f"Job '{job_title}' added successfully!")
+
+def update_job_in_db(job_id, job_title, location, salary, skills_required, contact_info):
+    conn = get_connection()
+    cursor = conn.cursor()
+    geolocator = Nominatim(user_agent="job_finder_ui")
+    location_data = geolocator.geocode(location)
+    latitude, longitude = None, None
+    if location_data:
+        latitude = location_data.latitude
+        longitude = location_data.longitude
+    cursor.execute('''
+    UPDATE jobs
+    SET job_title = ?, location = ?, latitude = ?, longitude = ?, salary = ?, skills_required = ?, contact_info = ?
+    WHERE id = ?
+    ''', (job_title, location, latitude, longitude, salary, skills_required, contact_info, job_id))
+    conn.commit()
+    conn.close()
+    st.success(f"Job with ID {job_id} updated successfully!")
+
+def get_job_by_id(job_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    SELECT * FROM jobs WHERE id = ?
+    ''', (job_id,))
+    job = cursor.fetchone()
+    conn.close()
+    return job
+
+def delete_job_from_db(job_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    DELETE FROM jobs WHERE id = ?
+    ''', (job_id,))
+    conn.commit()
+    conn.close()
+    st.success(f"Job with ID {job_id} deleted successfully!")
+
+def view_jobs_from_db(location=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = "SELECT * FROM jobs WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def search_jobs(location=None, skill=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = "SELECT * FROM jobs WHERE 1=1"
+    params = []
+    if location:
+        query += " AND location LIKE ?"
+        params.append(f"%{location}%")
+    if skill:
+        query += " AND skills_required LIKE ?"
+        params.append(f"%{skill}%")
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def recommend_jobs(skills_input):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT job_title, skills_required FROM jobs")
+    rows = cursor.fetchall()
+    conn.close()
+    jobs_df = pd.DataFrame(rows, columns=["job_title", "skills_required"])
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(jobs_df["skills_required"])
+    input_vec = vectorizer.transform([skills_input])
+    cosine_sim = cosine_similarity(input_vec, tfidf_matrix)
+    jobs_df["similarity"] = cosine_sim.flatten()
+    recommended_jobs = jobs_df.sort_values(by="similarity", ascending=False)
+    return recommended_jobs.head(5)
+
+st.title("Local Job Finder for Rural Areas")
+
+menu = st.sidebar.selectbox("Menu", ["Add Job", "View Jobs", "Search Jobs", "Job Recommendations", "Update Job", "Delete Job"])
+
+if menu == "Add Job":
+    st.subheader("Add Job")
+    job_title = st.text_input("Job Title")
+    location = st.text_input("Location")
+    salary = st.text_input("Salary")
+    skills_required = st.text_area("Skills Required")
+    contact_info = st.text_input("Contact Information")
+    if st.button("Add Job"):
+        if job_title and location and salary and skills_required and contact_info:
+            add_job_to_db(job_title, location, salary, skills_required, contact_info)
+        else:
+            st.error("Please fill out all fields.")
+
+elif menu == "View Jobs":
+    st.subheader("View All Jobs")
+    location_filter = st.text_input("Filter by Location", help="Enter the location to filter jobs.")
+    jobs = view_jobs_from_db(location=location_filter)
+    if jobs:
+        for job in jobs:
+            st.write(f"**Job ID:** {job[0]}")
+            st.write(f"**Job Title:** {job[1]}")
+            st.write(f"**Location:** {job[2]}")
+            st.write(f"**Salary:** {job[5]}")
+            st.write(f"**Skills Required:** {job[6]}")
+            st.write(f"**Contact Info:** {job[7]}")
+            st.write("---")
+    else:
+        st.info("No jobs found in the specified location.")
+
+elif menu == "Search Jobs":
+    st.subheader("Search Jobs")
+    search_location = st.text_input("Search by Location")
+    search_skill = st.text_input("Search by Skill")
+    if st.button("Search"):
+        results = search_jobs(location=search_location, skill=search_skill)
+        if results:
+            for job in results:
+                st.write(f"**Job ID:** {job[0]}")
+                st.write(f"**Job Title:** {job[1]}")
+                st.write(f"**Location:** {job[2]}")
+                st.write(f"**Salary:** {job[5]}")
+                st.write(f"**Skills Required:** {job[6]}")
+                st.write(f"**Contact Info:** {job[7]}")
+                st.write("---")
+        else:
+            st.info("No jobs found matching your criteria.")
+
+elif menu == "Job Recommendations":
+    st.subheader("Job Recommendations Based on Skills")
+    skill_input = st.text_area("Enter Your Skills")
+    if st.button("Recommend Jobs"):
+        if skill_input:
+            recommended_jobs = recommend_jobs(skill_input)
+            if not recommended_jobs.empty:
+                for _, job in recommended_jobs.iterrows():
+                    st.write(f"**Job Title:** {job['job_title']}")
+                    st.write(f"**Skills Required:** {job['skills_required']}")
+                    st.write("---")
+            else:
+                st.info("No recommendations found.")
+        else:
+            st.error("Please enter some skills.")
+
+elif menu == "Update Job":
+    st.subheader("Update Job")
+    job_id = st.text_input("Enter Job ID to Update")
+    if job_id:
+        job_details = get_job_by_id(job_id)
+        if job_details:
+            job_title = st.text_input("Job Title", value=job_details[1])
+            location = st.text_input("Location", value=job_details[2])
+            salary = st.text_input("Salary", value=job_details[5])
+            skills_required = st.text_area("Skills Required", value=job_details[6])
+            contact_info = st.text_input("Contact Information", value=job_details[7])
+            if st.button("Update Job"):
+                update_job_in_db(job_id, job_title, location, salary, skills_required, contact_info)
+
+elif menu == "Delete Job":
+    st.subheader("Delete Job")
+    job_id = st.text_input("Enter Job ID to Delete")
+    if st.button("Delete Job"):
+        if job_id:
+            delete_job_from_db(job_id)
+        else:
+            st.error("Please enter a valid Job ID.")
